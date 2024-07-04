@@ -1,74 +1,26 @@
 import json
 from datetime import datetime
 from collections import defaultdict
-from re import S
+import pandas as pd
+import os
 
-# List of specific names to check in "last name, first name" format
-specific_names_case = [
-    "Aden, Jonah", "Berg, Lauren", "Baldwin, Mia", "Singleton, Grant", "Triebe, Shaelin",
-    "LeMay, Shaylee", "Lockhart, Grace", "Houghton, Emily", "Allen, Olivia", "Hernandez-Perez, Natalie",
-    "Adeniran, Chloe", "Dunlap, Haley", "Lollis, Olivia", "Ries, Katie", "Hrycenko, Krista",
-    "Corrales, Raul", "Corrales, Aiyana", "Hanson, Cecilia", "Goettshe, Olivia", "Arndt, London",
-    "Wallace, McKenna", "Sterger, Taylor", "Smith, Cooper", "Adams, Ella", "Thompson, Rowan",
-    "bleam, bethany", "Caprye, Eliana", "Caprye, Joelle", "Blankenagel, Caitin", "Allen, Rylan",
-    "Cummins, Journey", "Ramirez, Alora", "Carter, Kendall", "Asbjornsen, Elliot"
-]
+# Load primary location employees data
+with open('primary_location_employees.json', 'r') as file:
+    primary_location_employees = json.load(file)
 
-specific_names = [s.lower() for s in specific_names_case]
+# Load shifts data
+with open('input.json', 'r') as file:
+    data = json.load(file)
 
-# Mapping of location IDs to names
+# Load location map
 location_map = {
+    18931: "Shadle",
     18932: "Liberty",
     18927: "Witter",
     18929: "Comstock",
     18930: "Hillyard",
-    18928: "Cannon"
+    18928: "A.M. Cannon"
 }
-
-# Load the JSON data from the file
-with open('input.json', 'r') as file:
-    data = json.load(file)
-
-# Function to extract relevant information and format dates/times
-def extract_shadle_primary_shifts(data):
-    results = defaultdict(list)
-    
-    text_to_avoid = ["manager meeting", "manger meeting"]
-    
-    for shift in data:
-        user_name_for_shift = shift.get("user_name_for_shift")
-        location_id = shift["location_id"]
-        position_id = shift["position_id"]
-        notes = shift["notes"]
-        
-        if user_name_for_shift and user_name_for_shift.lower() in specific_names and location_id != 18931 and location_id in location_map and position_id != 28199:
-            skip_shift = False
-            if notes:
-                for text in text_to_avoid:
-                    if text in notes.lower():
-                        skip_shift = True
-                        break
-            
-            if skip_shift:
-                continue
-            
-            start_dt = datetime.fromisoformat(shift["start_time"])
-            end_dt = datetime.fromisoformat(shift["end_time"])
-            date = start_dt.strftime("%B %d, %Y")
-            start_time = start_dt.strftime("%I:%M %p")
-            end_time = end_dt.strftime("%I:%M %p")
-            
-            results[date].append({
-                "name": ' '.join(user_name_for_shift.split(', ')[::-1]),
-                "start_time": start_time,
-                "end_time": end_time,
-                "location": location_map[location_id],
-                "notes": shift.get("notes")
-            })
-    return results
-
-# Extract the relevant data
-shadle_primary_info = extract_shadle_primary_shifts(data)
 
 # Week ranges
 weeks = {
@@ -77,29 +29,116 @@ weeks = {
     "week 3": ("July 1, 2024", "July 7, 2024"),
 }
 
-def write_shifts_to_file(shadle_primary_info, filename, start_date, end_date, week):
-    shift_count = 0
-    start_dt = datetime.strptime(start_date, "%B %d, %Y")
-    end_dt = datetime.strptime(end_date, "%B %d, %Y")
-    
-    with open(filename, 'w') as output_file:
-        output_file.write(f"Shadle Sub Shifts at other pools for {week} ({start_date} to {end_date})\n\n")
-        for date, shifts in sorted(shadle_primary_info.items()):
-            current_date = datetime.strptime(date, "%B %d, %Y")
-            if start_dt <= current_date <= end_dt:
-                output_file.write(f"{date}\n")
-                for shift in shifts:
-                    notes = shift.get('notes')
-                    shift_count += 1
-                    output_file.write(f"    {shift['name']}")
-                    output_file.write(f" subbed from {shift['start_time']} to")
-                    output_file.write(f" {shift['end_time']} at ")
-                    output_file.write(f"{shift['location']}")
-                    if notes:
-                        output_file.write(f" for {shift['notes']}")
-                    output_file.write("\n\n")
-        output_file.write(f"\nTotal Shifts: {shift_count}\n")
+text_to_avoid = ["inservice", "manager meeting", "manger meeting"]
 
-# Write shifts for each week
-for week, (start_date, end_date) in weeks.items():
-    write_shifts_to_file(shadle_primary_info, f"{week}.txt", start_date, end_date, week)
+# Define the directory for output files
+output_dir = "output"
+os.makedirs(output_dir, exist_ok=True)
+
+def get_primary_location(user_id, primary_location_employees):
+    for primary_location_id, employees in primary_location_employees.items():
+        for employee in employees:
+            if employee['id'] == user_id:
+                return primary_location_id
+    return None
+
+def filter_shifts(data, primary_location_employees):
+    filtered_shifts = []
+    for shift in data:
+        user_id = shift.get("user_id")
+        if user_id is None:
+            continue
+        primary_location_id = get_primary_location(user_id, primary_location_employees)
+        if primary_location_id is None:
+            continue
+        
+        # Skip shifts at the employee's primary location
+        if primary_location_id == str(shift["location_id"]):
+            continue
+        
+        # Skip shifts with position_id 28199
+        if shift["position_id"] == 28199:
+            continue
+        
+        if shift["user_id"] in [203215, 227761, 203210, 203536]:
+            continue
+        
+        notes = shift.get("notes")
+        if notes:
+            notes = notes.lower()
+            if any(text in notes for text in text_to_avoid):
+                continue
+        
+        shift['primary_location_id'] = primary_location_id
+        filtered_shifts.append(shift)
+    return filtered_shifts
+
+def group_shifts_by_primary_pool(filtered_shifts):
+    grouped_shifts = defaultdict(lambda: defaultdict(list))
+    for shift in filtered_shifts:
+        primary_location_id = shift["primary_location_id"]
+        primary_location_name = location_map.get(int(primary_location_id), "Unknown")
+        if primary_location_name == "Unknown":
+            print(f"Warning: Unknown primary location ID {primary_location_id}")
+        start_dt = datetime.fromisoformat(shift["start_time"])
+        date = start_dt.strftime("%B %d, %Y")
+        grouped_shifts[primary_location_name][date].append(shift)
+    return grouped_shifts
+
+def write_shifts_to_file(grouped_shifts, weeks):
+    summary = defaultdict(lambda: defaultdict(int))
+    
+    for pool, dates in grouped_shifts.items():
+        filename = os.path.join(output_dir, f"{pool}_subs.txt")
+        with open(filename, 'w') as output_file:
+            for week, (start_date, end_date) in weeks.items():
+                output_file.write(f"{week.upper()}: {pool} Sub Shifts ({start_date} to {end_date})\n\n")
+                start_dt = datetime.strptime(start_date, "%B %d, %Y")
+                end_dt = datetime.strptime(end_date, "%B %d, %Y")
+                shift_count = 0
+                
+                for date, shifts in sorted(dates.items()):
+                    current_date = datetime.strptime(date, "%B %d, %Y")
+                    if start_dt <= current_date <= end_dt:
+                        output_file.write(f"{date}\n")
+                        for shift in shifts:
+                            shift_count += 1
+                            user_name = ' '.join(shift["user_name_for_shift"].split(', ')[::-1])
+                            start_time = datetime.fromisoformat(shift["start_time"]).strftime("%I:%M %p")
+                            end_time = datetime.fromisoformat(shift["end_time"]).strftime("%I:%M %p")
+                            notes = shift.get("notes", "")
+                            sub_location_name = location_map.get(shift["location_id"], "Unknown")
+                            output_file.write(f"    {user_name} subbed from {start_time} to {end_time} at {sub_location_name}")
+                            if notes:
+                                output_file.write(f" for {notes}")
+                            output_file.write(f"\n")
+                        output_file.write("\n")
+                
+                output_file.write(f"Total Shifts: {shift_count}\n\n\n\n\n")
+                summary[pool][week] = shift_count
+    
+    return summary
+
+def save_summary_to_txt(summary, weeks):
+    # Convert the summary dictionary to a DataFrame and transpose it
+    df = pd.DataFrame(summary).T
+
+    # Calculate the total number of shifts per pool (row-wise)
+    df["Total"] = df.sum(axis=1)
+
+    # Calculate the total number of shifts per week (column-wise)
+    df.loc["Total"] = df.sum()
+
+    # Save the DataFrame to a text file with formatting
+    with open(os.path.join(output_dir, "Summary.txt"), "w") as file:
+        file.write(df.to_string())
+
+filtered_shifts = filter_shifts(data, primary_location_employees)
+with open(os.path.join(output_dir, 'Subbed_Shifts.json'), 'w') as file:
+    json.dump(filtered_shifts, file, indent=4)
+
+grouped_shifts = group_shifts_by_primary_pool(filtered_shifts)
+summary = write_shifts_to_file(grouped_shifts, weeks)
+save_summary_to_txt(summary, weeks)
+
+print("Processing complete. Check the output files for results.")
